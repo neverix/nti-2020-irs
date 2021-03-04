@@ -11,7 +11,7 @@
 		<include>
 			<uri>model://pioneer3dx-robot-core</uri>
 			<name>r1</name>
-			<pose>1.2 2.6999999999999997 0 0 0 0</pose>
+			<pose>0.9 2.6999999999999997 0 0 0 0</pose>
 		</include>
 		<include>
 			<uri>model://sun</uri>
