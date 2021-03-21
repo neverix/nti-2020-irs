@@ -32,8 +32,8 @@ def turn_angle(target_dir: float) -> float:
     global robot
 
     # defining some constants
-    MAX_TURN_SPEED = 0.4
-    P_COEF = 0.4
+    MAX_TURN_SPEED = 0.3
+    P_COEF = 0.3
 
     current_dir = robot.getDirection()
     # calculate target direction of robot after turn
@@ -87,18 +87,36 @@ def get_points(laser, rot=0., arm=0.455/2):
 
 def m2cpr(x):
     return x / 0.09
-def forward():
+def forward(controller=1):
     # compass
-    target = round_angle(robot.getDirection())
-    def error():
-        err = (robot.getDirection() - target + np.pi * 5) % (np.pi * 2) - (np.pi)
+    target_angle = round_angle(robot.getDirection())
+    def compass_error():
+        err = (robot.getDirection() - target_angle + np.pi * 5) % (np.pi * 2) - (np.pi)
         return err * 50
+    # laser
+    sl, _, sr = sensor()
+    def laser_error():
+        l, _, r = sensor()
+        if l < 0.5 and r < 0.5:
+            return (r - l) * 50
+        elif l < 0.5:
+            return (l - 0.3) * 50
+        elif r < 0.5:
+            return (r - 0.3) * 50
+        else:
+            return compass_error()
 
-    # encoder
+    if controller == 0:
+        error = compass_error
+    elif controller == 1:
+        error = laser_error
+
+    # terminator
     encoder_start = robot.getEncoders()["left"]
     def termination():
         encoder_current = robot.getEncoders()["left"]
-        return encoder_current - encoder_start >= m2cpr(block_size)
+        _, f, _ = sensor()
+        return (encoder_current - encoder_start >= m2cpr(block_size)) # or (f < 0.7)
 
     # PID
     pid(error, termination)
@@ -137,22 +155,24 @@ def sensor():
     x = np.linspace(-angle, +angle, len(vals))
     closest = lambda k: vals[np.argmin(np.abs(x - k))]
     point = np.pi/2
-    return closest(point), closest(0.), closest(-point)
+    return closest(point), vals[len(vals) // 2], closest(-point)
 def rhr():
     l, f, r = sensor()
     if r > 0.5:
+        print("right+forward")
         right()
         forward()
-    elif f < 0.7:
-        if r > 0.5:
-            right()
-        elif l > 0.5:
+    elif f < 0.65:
+        print("obstacle+", end='')
+        if l > 0.5:
+            print("left")
             left()
         else:
-            print("stuck")
-            exit()
+            print("right")
+            right()
         forward()
     else:
+        print("forward")
         forward()
 
 
