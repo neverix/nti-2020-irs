@@ -3,6 +3,7 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/nti2021-uts.iml" filepath="$PROJECT_DIR$/.idea/nti2021-uts.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../catkin_ws/src/.idea/src.iml" filepath="$PROJECT_DIR$/../catkin_ws/src/.idea/src.iml" />
     </modules>
   </component>
 </project>
