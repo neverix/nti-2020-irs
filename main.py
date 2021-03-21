@@ -13,6 +13,8 @@ deg2rad = math.radians
 deg90 = math.pi/2
 block_size = 0.55
 velocity = .5
+bff_limit = 0.15
+bff_vel = 0.25
 
 
 def right():
@@ -87,40 +89,73 @@ def get_points(laser, rot=0., arm=0.455/2):
 
 def m2cpr(x):
     return x / 0.09
-def forward(controller=1):
+def compass_error():
     # compass
     target_angle = round_angle(robot.getDirection())
-    def compass_error():
+    def error():
         err = (robot.getDirection() - target_angle + np.pi * 5) % (np.pi * 2) - (np.pi)
         return err * 50
+    return error
+def laser_error():
     # laser
     sl, _, sr = sensor()
-    def laser_error():
+    compass = compass_error()
+    def error():
         l, _, r = sensor()
         if l < 0.5 and r < 0.5:
-            return (r - l) * 50
+            return (r - l) * 150
         elif l < 0.5:
-            return (l - 0.3) * 50
+            return (0.28 - l) * 150
         elif r < 0.5:
-            return (r - 0.3) * 50
+            return (r - 0.28) * 150
         else:
-            return compass_error()
-
+            return compass()
+    return error
+def forward(controller=1):
     if controller == 0:
-        error = compass_error
+        error = compass_error()
     elif controller == 1:
-        error = laser_error
+        error = laser_error()
 
     # terminator
     encoder_start = robot.getEncoders()["left"]
     def termination():
         encoder_current = robot.getEncoders()["left"]
         _, f, _ = sensor()
-        return (encoder_current - encoder_start >= m2cpr(block_size)) # or (f < 0.7)
+        return (encoder_current - encoder_start >= m2cpr(block_size)) or (f < bff_limit)
 
     # PID
     pid(error, termination)
-def pid(error, termination, vel=velocity, rot=1., sleep=0.005, kp=0.01, ki=0.0001, kd=0.03,):
+def bff():
+    error = laser_error()
+    _, sf, _ = sensor()
+    if 0.6 < sf < 0.7:
+        # print(sf)
+        # print("shwup", end='')
+        robot.setVelosities(-0.5, 0)
+        robot.sleep(0.5)
+        robot.setVelosities(0, 0)
+    if sf > bff_limit:
+        goal = 1
+        def termination():
+            _, f, _ = sensor()
+            if f <= bff_limit:
+                return True
+            return False
+    else:
+        goal = -1
+        def termination():
+            _, f, _ = sensor()
+            if f >= bff_limit:
+                 #print("term")
+                return True
+            # print("non")
+            return False
+
+    pid(error, termination, vel=bff_vel*goal)
+
+
+def pid(error, termination, vel=velocity, rot=1., sleep=0.0025, kp=0.01, ki=0.0001, kd=0.03,):
     old_error = 0.
     I = 0
     while not termination():
@@ -162,8 +197,9 @@ def rhr():
         print("right+forward")
         right()
         forward()
-    elif f < 0.65:
-        print("obstacle+", end='')
+    elif f < 0.7:
+        print("obstacle+bff+", end='')
+        bff()
         if l > 0.5:
             print("left")
             left()
