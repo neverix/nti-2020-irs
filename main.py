@@ -12,6 +12,7 @@ import math
 deg2rad = math.radians
 deg90 = math.pi/2
 block_size = 0.55
+velocity = .5
 
 
 def right():
@@ -101,7 +102,7 @@ def forward():
 
     # PID
     pid(error, termination)
-def pid(error, termination, vel=.5, rot=5., sleep=0.005, kp=0.01, ki=0.0001, kd=0.03,):
+def pid(error, termination, vel=velocity, rot=1., sleep=0.005, kp=0.01, ki=0.0001, kd=0.03,):
     old_error = 0.
     I = 0
     while not termination():
@@ -116,24 +117,66 @@ def pid(error, termination, vel=.5, rot=5., sleep=0.005, kp=0.01, ki=0.0001, kd=
     robot.setVelosities(0, 0)
 
 
+def away(digits):
+    for i in digits:
+        if i == 0:
+            pass
+        elif i == 1:
+            left()
+        elif i == 2:
+            # bft()
+            right()
+        elif i == 3:
+            forward()
+            # if sF() < 30: bff()
+        robot.sleep(0.1)
+def sensor():
+    laser = robot.getLaser()
+    vals = laser["values"]
+    angle = laser["angle"] / 2
+    x = np.linspace(-angle, +angle, len(vals))
+    closest = lambda k: vals[np.argmin(np.abs(x - k))]
+    point = np.pi/2
+    return closest(point), closest(0.), closest(-point)
+def rhr():
+    l, f, r = sensor()
+    if r > 0.5:
+        right()
+        forward()
+    elif f < 0.7:
+        if r > 0.5:
+            right()
+        elif l > 0.5:
+            left()
+        else:
+            print("stuck")
+            exit()
+        forward()
+    else:
+        forward()
+
+
+
 if __name__ == "__main__":
 
     # initialize robot
     robot = Robot()
+
     # exit()
     # right()
     # left()
-    for _ in range(4):
-        forward()
-        robot.sleep(0.5)
-    right()
-    for _ in range(4):
-        forward()
-        robot.sleep(0.5)
-    right()
-    for _ in range(2):
-        forward()
-        robot.sleep(0.5)
+
+    while True:
+        rhr()
+        robot.sleep(0.1)
+    exit()
+
+    away([3, 3, 3, 3,  2,
+          3, 3, 3, 3,  2,
+          3, 3, 2,
+          3, 3, 2,
+          3, 3, 1,
+          3, 3, 2])
     exit()
 
     #
