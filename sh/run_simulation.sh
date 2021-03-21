@@ -9,7 +9,7 @@ source "$BASE_DIR/sh/cfg.sh"
 # echo "updated gazebo model path: $GAZEBO_MODEL_PATH"
 
 S=$1
-S=1
+S=3
 
 if [ -z "$S" ] || [ ! -f "$BASE_DIR/open_worlds/$S.world" ]; then
 	echo "Please, provide a world name. Available worlds:"
