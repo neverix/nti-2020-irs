@@ -8,15 +8,16 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 
-def get_points(laser, rot=0.):
+def get_points(laser, rot=0., arm=0.455/2):
+    angle = laser["angle"]
     laser = laser["values"]
-    xs = np.linspace(-np.pi * 3/4, +np.pi * 3/4, len(laser)) + rot
+    xs = np.linspace(-angle/2, +angle/2, len(laser)) + rot
     ys = np.array(laser)
-    mid = len(laser) // 2
-    print(ys[mid])
-    ys[mid-1] = 2.5
-    ys[mid] = 0
-    xs, ys = np.cos(xs) * ys, np.sin(xs) * ys
+    # mid = len(laser) // 2
+    # print(ys[mid])
+    # ys[mid-1] = 2.5
+    # ys[mid] = 0
+    xs, ys = np.cos(xs) * ys + np.cos(rot) * arm, np.sin(xs) * ys + np.sin(rot) * arm
     xs, ys = xs[40:-40], ys[40:-40]
     return xs, ys
 
@@ -51,15 +52,15 @@ if __name__ == "__main__":
     dir1 = robot.getDirection()
     print('l1')
 
-    # robot.setVelosities(0., 0.6)
-    # robot.sleep(1)
+    robot.setVelosities(0.6, 0.7)
+    robot.sleep(1)
     robot.setVelosities(0, 0)
 
     laser2 = robot.getLaser()
     dir2 = robot.getDirection()
 
     plt.scatter(*get_points(laser1, dir1))
-    # plt.scatter(*get_points(laser2, dir2))
+    plt.scatter(*get_points(laser2, dir2))
     plt.show()
 
     exit()
