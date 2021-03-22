@@ -26,7 +26,7 @@ def round_angle(a):
 def turn(a):
     target = round_angle(a) + deg90 * a
     turn_angle(target)
-def turn_angle(target_dir: float) -> float:
+def turn_angle(target_dire: float) -> float:
     """
     function turns robot at given angle in radians
     returns predicted position after turn (calculated position, real position may differ)
@@ -34,12 +34,12 @@ def turn_angle(target_dir: float) -> float:
     global robot
 
     # defining some constants
-    MAX_TURN_SPEED = 0.3
-    P_COEF = 0.3
+    MAX_TURN_SPEED = 0.4
+    P_COEF = 0.4
 
     current_dir = robot.getDirection()
     # calculate target direction of robot after turn
-    # target_dir = current_dir + add_deg_rad
+    target_dir = target_dire + current_dir # + add_deg_rad
 
     # calculate error of rotation (nobody knows how it works, but it does)
     e = (target_dir - current_dir + np.pi * 5) % (np.pi * 2) - (np.pi)
@@ -67,7 +67,7 @@ def turn_angle(target_dir: float) -> float:
 def std(x):
     return (x + np.pi * 5) % (np.pi * 2) - (np.pi)
 def get_points(laser, rot=0., arm=0.455/2):
-    angle = laser["angle"]
+    angle = np.pi * 4 / 3 # laser["angle"]
     laser = laser["values"]
     xs = np.linspace(-angle/2, +angle/2, len(laser)) + rot
     ys = np.array(laser)
@@ -78,9 +78,12 @@ def get_points(laser, rot=0., arm=0.455/2):
     xs, ys = np.cos(xs) * ys + np.cos(rot) * arm, np.sin(xs) * ys + np.sin(rot) * arm
     xs, ys = xs[40:-40], ys[40:-40]
     xy = np.stack((xs, ys), axis=-1)
+    return xy
     d = xy[1:] - xy[:-1]
     r = std(std(np.arctan2(d[:, 1], d[:, 0])) - rot)
     r = r[1:] - r[:-1]
+    source = np.cos(np.linspace(-angle/2, +angle/2, len(laser)))[40:-40][2:]
+    return source, r
     # r = r ** 2
     plt.plot(r)
     plt.show()
@@ -119,6 +122,7 @@ def forward(controller=1):
 
     # terminator
     encoder_start = robot.getEncoders()["left"]
+    _, laser_start, _ = sensor()
     def termination():
         encoder_current = robot.getEncoders()["left"]
         _, f, _ = sensor()
@@ -184,13 +188,20 @@ def away(digits):
             # if sF() < 30: bff()
         robot.sleep(0.1)
 def sensor():
-    laser = robot.getLaser()
-    vals = laser["values"]
+    vals = None
+    for _ in range(3):
+        laser = robot.getLaser()
+        if vals is None:
+            vals = np.array(laser["values"])
+        else:
+            vals += np.array(laser["values"])
+    # vals = laser["values"]
+    vals /= 3
     angle = laser["angle"] / 2
     x = np.linspace(-angle, +angle, len(vals))
     closest = lambda k: vals[np.argmin(np.abs(x - k))]
     point = np.pi/2
-    return closest(point), vals[len(vals) // 2], closest(-point)
+    return closest(point), min(vals[len(vals) // 2-8:len(vals) // 2+8]), closest(-point)
 def rhr():
     l, f, r = sensor()
     if r > 0.5:
@@ -212,11 +223,104 @@ def rhr():
         forward()
 
 
+def sanitize(a):
+    return a[np.all(np.isfinite(a) & np.isfinite(b), axis=-1)].copy()
+
+
+def icp(a, b):
+    a, b = a[np.all(np.isfinite(a) & np.isfinite(b), axis=-1)].copy(), b[np.all(np.isfinite(b) & np.isfinite(a), axis=-1)].copy()
+    sqrs = np.sum((a - b) ** 2, axis=-1)
+    keep = sqrs < np.sort(sqrs)[int(len(sqrs) * 0.5)]
+    # a, b = a[keep], b[keep]
+
+    a_mean = np.mean(a, axis=0)
+    b_mean = np.mean(b, axis=0)
+    # a -= a_mean
+    # b -= b_mean
+    n = a.T @ b
+    u, d, vt = np.linalg.svd(n)
+    rot = np.dot(vt.T, u.T)
+    if np.linalg.det(rot) < 0:
+        vt[1, :] *= -1
+        rot = vt.T @ u.T
+    t = b_mean.T - rot @ a_mean.T
+    # t = b_mean - a_mean # np.mean(b - a, axis=0)
+    mat = np.identity(3)
+    # mat[:2, :2] = rot
+    mat[:2, 2] = np.mean(a - b, axis=0)  # b_mean - a_mean
+    return mat, rot, t
+
+
+def kn():
+    knn = cv2.ml.KNearest_create()
+    knn.train(points_a.astype(np.float32), cv2.ml.ROW_SAMPLE, np.array(list(range(len(points_a))), dtype=np.int32))
+
+    m = np.identity(3)
+    ds = []
+    points_d = np.concatenate((points_b, np.ones((points_b.shape[0], 1))), axis=-1).copy()
+    for i in range(150):
+        print(i)
+        print("neighbors")
+        _, result, _, _ = knn.findNearest(points_d.astype(np.float32)[:, :2], k=1)
+        result = result[:, 0].astype(np.int32)
+        points_c = points_a[result]
+        print("icp")
+        m_, r, t = icp(points_d[:, :2], points_c)
+        m = np.matmul(m, m_)
+        print("plot")
+        points_d = np.einsum("ij, ki -> kj", m_, points_d)
+        points_d = np.concatenate((points_d[:, :2], np.ones((points_d.shape[0], 1))), axis=-1).copy()
+        ds.append(points_d)
+
+    for points_d in ds[-1:]:
+        plt.plot(points_d[:, 0], points_d[:, 1])
+
 
 if __name__ == "__main__":
 
     # initialize robot
     robot = Robot()
+
+    # help(cv2.ppf_match_3d)
+    # exit()
+
+    robot.setVelosities(0., -.6)
+    robot.sleep(2.)
+    points_a = get_points(robot.getLaser(), robot.getDirection())
+
+    robot.setVelosities(.5, -.6)
+    robot.sleep(1.)
+    points_b = get_points(robot.getLaser(), robot.getDirection())
+    robot.setVelosities(0, 0)
+    points_b += np.mean(points_a, axis=0) - np.mean(points_b, axis=0)
+
+    plt.axes().set_aspect('equal')
+    plt.plot(points_a[:, 0], points_a[:, 1])
+    plt.plot(points_b[:, 0], points_b[:, 1])
+    plt.show()
+
+
+    exit()
+
+
+    # left()
+    print('a')
+    print('b')
+    laser = robot.getLaser()
+    img = robot.getImage()
+    img = img[img.shape[0] // 2:-85]
+
+
+    cv2.imshow("hey", img)
+    cv2.waitKey(0)
+
+    plt.plot(laser["values"][::-1])
+    plt.show()
+    exit()
+    x, y = get_points(laser, robot.getDirection())
+    plt.plot(x, np.abs(y))
+    plt.show()
+    exit()
 
     # exit()
     # right()
