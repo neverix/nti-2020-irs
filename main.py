@@ -310,9 +310,13 @@ def kn():
         plt.plot(points_d[:, 0], points_d[:, 1])
 
 
+def world2img(x):
+    return x.copy() / 10. + .5
+
+
 def create_img(origin, points, img_size=512, kernel=9):
     img = np.zeros((img_size, img_size), dtype=np.uint8)
-    conv = lambda x: (x / 10. + .5) * img_size
+    conv = lambda x: world2img(x) * img_size
     indices = conv(points)
     tile = img.copy()
     tuplify = lambda y: tuple(int(x) for x in y.flatten())
@@ -426,7 +430,12 @@ def rem(plot=False, draw=False):
     # plt.plot(points_c[:, 0], points_c[:, 1])
 
     points_d, m_, err = align(points_last, points_b, m, keep_thresh=.65, iterations=59)
+    # m_, err, points_d = np.identity(3), 0., points_b
+    # points_de = np.concatenate((points_d, np.ones((points_d.shape[0], 1))), axis=-1).copy()
+    # points_de = np.dot(m_, points_de.T).T[:, :2]
+    m = np.dot(m, m_)
     origin = m[:2, 2]
+    # print(origin)
 
     if plot:
         for point in all_points:
@@ -434,18 +443,14 @@ def rem(plot=False, draw=False):
         plt.plot(points_d[:, 0], points_d[:, 1], c="black")
         plt.scatter(origin[0], origin[1], c="gray", marker='x')#"cross")
         plt.show()
-    # m_, err, points_d = np.identity(3), 0., points_b
-    # points_de = np.concatenate((points_d, np.ones((points_d.shape[0], 1))), axis=-1).copy()
-    # points_de = np.dot(m_, points_de.T).T[:, :2]
-    m = np.dot(m, m_)
 
     # print(err)
     img_, tile_ = create_img(origin, points_d, 512, 5)
     img += img_
     tile += tile_
     if draw:
-        cv2.imshow("img", ((img / img.max()) * 255).astype(np.uint8))
-        cv2.imshow("tile", ((tile / tile.max()) * 255).astype(np.uint8))
+        cv2.imshow("img", maxnorm(img).astype(np.uint8))
+        cv2.imshow("tile", maxnorm(tile).astype(np.uint8))
         # cv2.imshow("img", ((img > 1) * 255).astype(np.uint8))
         # robot.setVelosities(0, 0)
         cv2.waitKey(1)
@@ -453,6 +458,38 @@ def rem(plot=False, draw=False):
     all_points.append(points_d[np.all(np.isfinite(points_d), axis=-1), :2])
     # points_last = np.concatenate((points_last, points_d[np.all(np.isfinite(points_d), axis=-1), :2]))
     return err, origin
+
+
+def maxnorm(img):
+    return (img / img.max()) * 255
+
+
+def bfs(world, source, trarge):
+    conv = lambda x: tuple(int(x) for x in (world.shape[0] * world2img(x)).flatten())
+    start = conv(source)
+    # print(source, start)
+    trarge = conv(trarge)
+    que = [start + ((),)]
+    vis = {start}
+    while True:
+        queue = []
+        for px, py, hist in que:
+            for x in range(-1, 1):
+                for y in range(-1, 1):
+                    if x == y == 0:
+                        continue
+                    point = (px+x, py+y)
+                    if point in vis:
+                        continue
+                    if world[point[1], point[0]] > 0:
+                        continue
+                    vis.add(point)
+                    point += (hist + (point,),)
+                    queue.append(point)
+                    if point[:2] == trarge:
+                        # print(point)
+                        return np.array(point[-1], dtype=np.int32)
+        que = queue
 
 
 if __name__ == "__main__":
@@ -469,12 +506,13 @@ if __name__ == "__main__":
     # help(cv2.ppf_match_3d)
     # exit()
 
-    robot.setVelosities(0., -.6)
+    # robot.setVelosities(0., -.6)
     robot.sleep(0.65)
     # robot.setVelosities(0., -0.)
     # robot.sleep(1.5)
     points_a = get_points(robot.getLaser(), robot.getDirection())
-    img, tile = create_img(np.zeros(2), points_a, 512, 5)
+    offset = np.zeros(2)
+    img, tile = create_img(offset, points_a, 512, 5)
 
     m = np.identity(3)
     points_last = points_a
@@ -483,12 +521,42 @@ if __name__ == "__main__":
     # robot.setVelosities(0., -0.)
     # robot.sleep(1.5)
     # exit()
-    for i in range(15):
-        print(i)
-        robot.setVelosities(.5, .0)
-        robot.sleep(.5)
-        robot.setVelosities(0, 0)
-        _, origin = rem(draw=True, plot=True)
+    for i in range(150):
+        # print(i)
+        if i == 0:
+            robot.setVelosities(.5, .0)
+            robot.sleep(.5)
+            robot.setVelosities(0, 0)
+        _, offset = rem()#draw=True)#draw=True, plot=True)
+        # print(offset)
+        if i > -1:
+            obst = (maxnorm(img) > .05).astype(np.uint8)
+            off = 23
+            obst = cv2.dilate(obst, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (off, off)))
+            hist = bfs(obst, offset, np.array((-4, -4)))
+            obst[hist[:, 1], hist[:, 0]] = 1
+            cv2.imshow("obst", obst * 255)
+            cv2.waitKey(1)
+            # plt.imshow(obst)
+            # plt.plot(hist[:, 0], hist[:, 1])
+            # plt.show()
+            # print(hist)
+            # print(hist.shape)
+            origin = hist[1] - hist[0]
+            print(origin)
+            angle = np.arctan2(origin[1], origin[0])
+            direction = robot.getDirection()
+            turns = -(std(angle) - std(direction))
+            # if abs(turns) > np.pi:
+            #     turns = (abs(turns) - np.pi) * -np.sign(turns)
+
+            # print(turns)
+            robot.setVelosities(.5, turns * 1)
+            # pf = np.zeros_like(img, dtype=np.float32)
+            # pf -= cv2.GaussianBlur(maxnorm(img), (23, 23), 7)
+            # plt.imshow(pf)
+            # plt.show()
+        robot.sleep(0.001)
     cv2.waitKey(0)
     exit()
     plt.axes().set_aspect('equal')
