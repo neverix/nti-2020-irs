@@ -37,23 +37,29 @@ def turn_angle(target_dire: float) -> float:
     MAX_TURN_SPEED = 0.4
     P_COEF = 0.4
 
-    current_dir = robot.getDirection()
+    current_dir = std(robot.getDirection())
     # calculate target direction of robot after turn
-    target_dir = target_dire + current_dir # + add_deg_rad
+    target_dir = std(target_dire) # + current_dir # + add_deg_rad
 
     # calculate error of rotation (nobody knows how it works, but it does)
-    e = (target_dir - current_dir + np.pi * 5) % (np.pi * 2) - (np.pi)
+    e = target_dir - current_dir
+    # print(current_dir, target_dir, target_dire)
 
     # accepting threshold after turn is 0.01
-    while abs(e - np.sign(e) * np.pi) > 0.01:
-        current_dir = robot.getDirection()
-        e = (target_dir - current_dir + np.pi * 5) % (np.pi * 2) - (np.pi)
-        turn_speed = -(e - np.sign(e) * np.pi) * P_COEF + np.sign(e) * 0.1
+    while abs(e) > 0.01:
+        current_dir = std(robot.getDirection())
+        e = target_dir - current_dir
+        # print(e)
+        if abs(e) < 0.1:
+            mts = .05
+        else:
+            mts = MAX_TURN_SPEED
+        turn_speed = (e - np.sign(e) * np.pi) * P_COEF + np.sign(e) * 0.1
 
         # limit our speed with MAX_TURN_SPEED bound
-        turn_speed = np.sign(turn_speed) * np.maximum(np.abs(turn_speed), MAX_TURN_SPEED)
+        # turn_speed = np.sign(turn_speed) *
         # equivalent to bottom line
-        # turn_speed = (turn_speed if turn_speed > -MAX_TURN_SPEED else -MAX_TURN_SPEED) if turn_speed < MAX_TURN_SPEED else MAX_TURN_SPEED
+        turn_speed = (turn_speed if turn_speed > -mts else -mts) if turn_speed < mts else mts
 
         robot.setVelosities(0, turn_speed)
 
@@ -65,8 +71,11 @@ def turn_angle(target_dire: float) -> float:
 
 
 def std(x):
-    return (x + np.pi * 5) % (np.pi * 2) - (np.pi)
-def get_points(laser, rot=0., arm=0.455/2):
+    if x < 0:
+        x = 2 * np.pi + x
+    return x % (np.pi * 2)
+def get_points(laser, rot=0., arm=0# .455/4#3
+               ):
     angle = np.pi * 4 / 3 # laser["angle"]
     laser = laser["values"]
     xs = np.linspace(-angle/2, +angle/2, len(laser)) + rot
@@ -258,7 +267,6 @@ def icp(a, b, keep_thresh=.75):
     # print(np.sort(sqrs)[int(len(sqrs) * keep_thresh)])
     keep = sqrs < np.sort(sqrs)[int(len(sqrs) * keep_thresh)]
     a, b = a[keep], b[keep]
-    m = a.shape[1]
     a_mean = np.mean(a, axis=0)
     b_mean = np.mean(b, axis=0)
     a = a - a_mean
@@ -271,10 +279,10 @@ def icp(a, b, keep_thresh=.75):
         rot = np.dot(vt.T, u.T)
     # rot = np.identity(2)
     t = b_mean.T - np.dot(rot, a_mean.T)
-    T = np.identity(3)
-    T[:m, :m] = rot
-    T[:m, m] = t
-    return T, rot, t
+    mat = np.identity(3)
+    mat[:2, :2] = rot
+    mat[:2, 2] = t
+    return mat, rot, t
 
 
 def kn():
@@ -302,13 +310,21 @@ def kn():
         plt.plot(points_d[:, 0], points_d[:, 1])
 
 
-def create_img(points, img_size=512, kernel=9):
+def create_img(origin, points, img_size=512, kernel=9):
     img = np.zeros((img_size, img_size), dtype=np.uint8)
-    indices = ((points / 10. - .5) * img_size)
+    conv = lambda x: (x / 10. + .5) * img_size
+    indices = conv(points)
+    tile = img.copy()
+    tuplify = lambda y: tuple(int(x) for x in y.flatten())
+    origin = tuplify(conv(origin))
+    for point in indices:
+        if any(~np.isfinite(point)):
+            continue
+        cv2.line(tile, origin, tuplify(point), (255,), thickness=kernel)
     indices = indices[np.all(np.isfinite(indices), axis=1)].astype(np.int32)
     img[indices[:, 0], indices[:, 1]] = 1
     img = cv2.dilate(img, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel, kernel)))
-    return img
+    return img, tile
 
 def trans(img, x, y):
     return cv2.warpAffine(img, np.float32([
@@ -319,6 +335,7 @@ def trans(img, x, y):
 
 def align(a, b, m=None, iterations=25, keep_thresh=.75):
     knn = cv2.ml.KNearest_create()
+    a = a[np.any(np.isfinite(a), axis=-1)]
     knn.train(a.astype(np.float32), cv2.ml.ROW_SAMPLE, np.array(list(range(len(a))), dtype=np.float32)[:, None])
 
     if m is None:
@@ -331,9 +348,9 @@ def align(a, b, m=None, iterations=25, keep_thresh=.75):
     for i in range(iterations):
         # print(i)
         # print("neighbors")
-        _, result, _, neighbors = knn.findNearest(points_d.astype(np.float32)[:, :2], k=1)
+        _, result, neighbors, _ = knn.findNearest(points_d.astype(np.float32)[:, :2], k=1)
         result = result[:, 0].astype(np.int32)
-        points_c = points_a[result]
+        points_c = a[result]
         # print("icp")
         # points_d = points_d + np.mean(points_c - points_d, axis=0)
         m_, r, t = icp(points_d[:, :2], points_c, keep_thresh)
@@ -350,43 +367,128 @@ def align(a, b, m=None, iterations=25, keep_thresh=.75):
     return points_d[:, :2], source_m, err
 
 
-if __name__ == "__main__":
-
-    # initialize robot
-    robot = Robot()
-
-    # help(cv2.ppf_match_3d)
-    # exit()
-
-    robot.setVelosities(0., -.6)
-    robot.sleep(0.5)
-    points_a = get_points(robot.getLaser(), robot.getDirection())
-    img = create_img(points_a, 512, 5)
-
-    m = np.identity(3)
-    points_last = points_a
-    for i in range(92):
-        print(i)
+def keyframe():
+    global img, m
+    direc = robot.getDirection()
+    # print(direc)
+    for i in range(5):
+        # print(i)
         robot.setVelosities(.0, .5)
         robot.sleep(.5)
         # robot.sleep(2.)
         # robot.setVelosities(.5, 0)
         # robot.sleep(2.)
-        points_b = get_points(robot.getLaser(), robot.getDirection())
+        a, _, b = robot.getDirection(), robot.sleep(.001), robot.getDirection()
+        points_b = get_points(robot.getLaser(), (a + b) / 2)
         robot.setVelosities(0, 0)
+        # plt.plot(points_b[:, 0], points_b[:, 1])
+        # plt.plot(points_last[:, 0], points_last[:, 1])
+        points_c = np.dot(m, np.concatenate((points_b, np.ones((points_b.shape[0], 1))), axis=-1).copy().T).T
+
+        # plt.plot(points_c[:, 0], points_c[:, 1])
 
         # points_d, m_, err = align(points_last, points_b, m, keep_thresh=.65)
+        # plt.plot(points_d[:, 0], points_d[:, 1])
+
+        # plt.show()
         m_, err, points_d = np.identity(3), 0., points_b
         # points_de = np.concatenate((points_d, np.ones((points_d.shape[0], 1))), axis=-1).copy()
         # points_de = np.dot(m_, points_de.T).T[:, :2]
         m = np.dot(m, m_)
 
-        print(err)
-        img += create_img(points_d, 512, 5)
-        cv2.imshow("img", (img.astype(np.float32) * 255 / img.max()).astype(np.uint8))
+        # print(err)
+        origin = m[:2, 2]
+        img_, tile_ = create_img(origin, points_d, 512, 5)
+        img += img_
+        cv2.imshow("img", ((img / img.max() > .1) * 255).astype(np.uint8))
         robot.setVelosities(0, 0)
         cv2.waitKey(1)
-        # points_last = points_d[:, :2]
+        # points_last = points_d[np.all(np.isfinite(points_d), axis=-1), :2]
+    robot.setVelosities(0, 0)
+    print(robot.getDirection())
+    turn_angle(std(direc))
+    print(robot.getDirection())
+
+
+
+def rem(plot=False, draw=False):
+    global m, img, tile
+    points = all_points[-3:] + all_points[0:-3:3]
+    points_last = np.concatenate(points, axis=0)
+    # robot.sleep(2.)
+    # robot.setVelosities(.5, 0)
+    # robot.sleep(2.)
+    points_b = get_points(robot.getLaser(), robot.getDirection())
+    # plt.plot(points_b[:, 0], points_b[:, 1])
+    # plt.scatter(points_last[:, 0], points_last[:, 1])
+    # points_c = np.dot(m, np.concatenate((points_b, np.ones((points_b.shape[0], 1))), axis=-1).copy().T).T
+
+    # plt.plot(points_c[:, 0], points_c[:, 1])
+
+    points_d, m_, err = align(points_last, points_b, m, keep_thresh=.65, iterations=59)
+    origin = m[:2, 2]
+
+    if plot:
+        for point in all_points:
+            plt.scatter(point[:, 0], point[:, 1])
+        plt.plot(points_d[:, 0], points_d[:, 1], c="black")
+        plt.scatter(origin[0], origin[1], c="gray", marker='x')#"cross")
+        plt.show()
+    # m_, err, points_d = np.identity(3), 0., points_b
+    # points_de = np.concatenate((points_d, np.ones((points_d.shape[0], 1))), axis=-1).copy()
+    # points_de = np.dot(m_, points_de.T).T[:, :2]
+    m = np.dot(m, m_)
+
+    # print(err)
+    img_, tile_ = create_img(origin, points_d, 512, 5)
+    img += img_
+    tile += tile_
+    if draw:
+        cv2.imshow("img", ((img / img.max()) * 255).astype(np.uint8))
+        cv2.imshow("tile", ((tile / tile.max()) * 255).astype(np.uint8))
+        # cv2.imshow("img", ((img > 1) * 255).astype(np.uint8))
+        # robot.setVelosities(0, 0)
+        cv2.waitKey(1)
+    # all_points = [points_d]
+    all_points.append(points_d[np.all(np.isfinite(points_d), axis=-1), :2])
+    # points_last = np.concatenate((points_last, points_d[np.all(np.isfinite(points_d), axis=-1), :2]))
+    return err, origin
+
+
+if __name__ == "__main__":
+
+    # initialize robot
+    robot = Robot()
+    #
+    # right()
+    # left()
+    # left()
+    # right()
+    # right()
+
+    # help(cv2.ppf_match_3d)
+    # exit()
+
+    robot.setVelosities(0., -.6)
+    robot.sleep(0.65)
+    # robot.setVelosities(0., -0.)
+    # robot.sleep(1.5)
+    points_a = get_points(robot.getLaser(), robot.getDirection())
+    img, tile = create_img(np.zeros(2), points_a, 512, 5)
+
+    m = np.identity(3)
+    points_last = points_a
+    all_points = [points_last]
+    # keyframe()
+    # robot.setVelosities(0., -0.)
+    # robot.sleep(1.5)
+    # exit()
+    for i in range(15):
+        print(i)
+        robot.setVelosities(.5, .0)
+        robot.sleep(.5)
+        robot.setVelosities(0, 0)
+        _, origin = rem(draw=True, plot=True)
     cv2.waitKey(0)
     exit()
     plt.axes().set_aspect('equal')
