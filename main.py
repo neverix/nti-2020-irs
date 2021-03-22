@@ -223,11 +223,12 @@ def rhr():
         forward()
 
 
-def sanitize(a):
+def sanitize(a, b):
     return a[np.all(np.isfinite(a) & np.isfinite(b), axis=-1)].copy()
 
 
-def icp(a, b):
+
+def icp2(a, b):
     a, b = a[np.all(np.isfinite(a) & np.isfinite(b), axis=-1)].copy(), b[np.all(np.isfinite(b) & np.isfinite(a), axis=-1)].copy()
     sqrs = np.sum((a - b) ** 2, axis=-1)
     keep = sqrs < np.sort(sqrs)[int(len(sqrs) * 0.5)]
@@ -251,13 +252,39 @@ def icp(a, b):
     return mat, rot, t
 
 
+
+
+def icp(a, b, keep_thresh=.75):
+    a, b = a[np.all(np.isfinite(a) & np.isfinite(b), axis=-1)].copy(), b[np.all(np.isfinite(b) & np.isfinite(a), axis=-1)].copy()
+    sqrs = np.sum((a - b) ** 2, axis=-1)
+    keep = sqrs < np.sort(sqrs)[int(len(sqrs) * keep_thresh)]
+    a, b = a[keep], b[keep]
+    m = a.shape[1]
+    a_mean = np.mean(a, axis=0)
+    b_mean = np.mean(b, axis=0)
+    a = a - a_mean
+    b = b - b_mean
+    n = np.dot(a.T, b)
+    u, d, vt = np.linalg.svd(n)
+    rot = np.dot(vt.T, u.T)
+    if np.linalg.det(rot) < 0:
+        vt[1, :] *= -1
+        rot = np.dot(vt.T, u.T)
+    # rot = np.identity(2)
+    t = b_mean.T - np.dot(rot, a_mean.T)
+    T = np.identity(3)
+    T[:m, :m] = rot
+    T[:m, m] = t
+    return T, rot, t
+
+
 def kn():
     knn = cv2.ml.KNearest_create()
     knn.train(points_a.astype(np.float32), cv2.ml.ROW_SAMPLE, np.array(list(range(len(points_a))), dtype=np.int32))
 
     m = np.identity(3)
     ds = []
-    points_d = np.concatenate((points_b, np.ones((points_b.shape[0], 1))), axis=-1).copy()
+    points_d = points_b.copy()#np.concatenate((points_b, np.ones((points_b.shape[0], 1))), axis=-1).copy()
     for i in range(150):
         print(i)
         print("neighbors")
@@ -265,15 +292,57 @@ def kn():
         result = result[:, 0].astype(np.int32)
         points_c = points_a[result]
         print("icp")
-        m_, r, t = icp(points_d[:, :2], points_c)
-        m = np.matmul(m, m_)
-        print("plot")
-        points_d = np.einsum("ij, ki -> kj", m_, points_d)
-        points_d = np.concatenate((points_d[:, :2], np.ones((points_d.shape[0], 1))), axis=-1).copy()
+        points_d = points_d + np.mean(points_c - points_d, axis=0)
+        # m_, r, t = icp(points_d[:, :2], points_c)
+        # m = np.matmul(m, m_)
+        # print("plot")
+        # points_d = np.einsum("ij, ki -> kj", m_, points_d)
+        # points_d = np.concatenate((points_d[:, :2], np.ones((points_d.shape[0], 1))), axis=-1).copy()
         ds.append(points_d)
-
     for points_d in ds[-1:]:
         plt.plot(points_d[:, 0], points_d[:, 1])
+
+
+def create_img(points, img_size=512, kernel=9):
+    img = np.zeros((img_size, img_size), dtype=np.uint8)
+    indices = ((points / 10. - .5) * img_size)
+    indices = indices[np.all(np.isfinite(indices), axis=1)].astype(np.int32)
+    img[indices[:, 0], indices[:, 1]] = 1
+    img = cv2.dilate(img, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel, kernel)))
+    return img
+
+def trans(img, x, y):
+    return cv2.warpAffine(img, np.float32([
+                    [1, 0, x],
+                    [0, 1, y]
+                ]), (img.shape[1], img.shape[0]))
+
+
+def align(a, b, iterations=25, keep_thresh=.75):
+    knn = cv2.ml.KNearest_create()
+    knn.train(a.astype(np.float32), cv2.ml.ROW_SAMPLE, np.array(list(range(len(a))), dtype=np.float32)[:, None])
+
+    m = np.identity(3)
+    ds = []
+    points_d = np.concatenate((b, np.ones((b.shape[0], 1))), axis=-1).copy()
+    err = 0.
+    for i in range(iterations):
+        # print(i)
+        # print("neighbors")
+        _, result, _, neighbors = knn.findNearest(points_d.astype(np.float32)[:, :2], k=1)
+        result = result[:, 0].astype(np.int32)
+        points_c = points_a[result]
+        # print("icp")
+        # points_d = points_d + np.mean(points_c - points_d, axis=0)
+        m_, r, t = icp(points_d[:, :2], points_c, keep_thresh)
+        # m = np.matmul(m, m_)
+        # print("plot")
+        points_d = np.dot(m_, points_d.T).T
+        err = np.sum((points_d[:, :2] - points_c) ** 2)
+        m = np.dot(m, m_)
+        # points_d = np.concatenate((points_d[:, :2], np.ones((points_d.shape[0], 1))), axis=-1).copy()
+        ds.append(points_d)
+    return points_d, m, err
 
 
 if __name__ == "__main__":
@@ -288,11 +357,50 @@ if __name__ == "__main__":
     robot.sleep(2.)
     points_a = get_points(robot.getLaser(), robot.getDirection())
 
-    robot.setVelosities(.5, -.6)
-    robot.sleep(1.)
+    robot.setVelosities(.5, -.8)
+    robot.sleep(2.)
+    # robot.sleep(2.)
+    # robot.setVelosities(.5, 0)
+    # robot.sleep(2.)
     points_b = get_points(robot.getLaser(), robot.getDirection())
     robot.setVelosities(0, 0)
-    points_b += np.mean(points_a, axis=0) - np.mean(points_b, axis=0)
+
+    points_d, m, err = align(points_a, points_b, keep_thresh=.65)
+    print(err)
+    plt.axes().set_aspect('equal')
+    plt.plot(points_a[:, 0], points_a[:, 1])
+    plt.plot(points_b[:, 0], points_b[:, 1])
+    # for points_d in ds[-1:]:
+
+        # points_d = np.concatenate((points_b, np.ones((points_b.shape[0], 1))), axis=-1).copy()
+        # points_d = np.dot(m, points_d.T).T
+    plt.plot(points_d[:, 0], points_d[:, 1])
+    plt.show()
+    exit()
+
+
+    img_1 = create_img(points_a)
+    img_2 = create_img(points_b)
+    tx,ty = 0, 0
+    for i in range(15):
+        print(i)
+        costs = []
+        for x in range(-1, 1):
+            for y in range(-1, 1):
+                img_3 = trans(img_1, x, y)
+                costs.append((np.sum(img_3 * img_2), (x, y), img_3))
+        _, (x, y), img_1 = max(costs)
+        tx, ty = tx + x, ty + y
+    cv2.imshow("hey", img_1 * 127 + img_2 * 127)
+    cv2.waitKey(0)
+    exit()
+    cv2.waitKey(0)
+
+    plt.axes().set_aspect('equal')
+    plt.plot(points_a[:, 0], points_a[:, 1])
+    plt.plot(points_b[:, 0], points_b[:, 1])
+    plt.show()
+    exit()
 
     plt.axes().set_aspect('equal')
     plt.plot(points_a[:, 0], points_a[:, 1])
@@ -467,3 +575,41 @@ if __name__ == "__main__":
 
         # some delay for don't overload computation
         robot.sleep(0.005)
+
+    arr = """
+    [0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 0]
+    [1 1 1 0 0 1 1 1 1 1 1 1 1 1 1 1]
+    [1 1 1 0 0 1 1 1 1 1 1 1 1 1 1 1]
+    [1 1 1 1 1 1 1 1 0 0 1 1 1 1 1 1]
+    [1 1 1 1 1 1 1 1 0 0 1 1 1 1 1 1]
+    [1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
+    [1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
+    [1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
+    [1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
+    [1 1 0 0 1 1 1 1 1 1 1 1 1 1 1 1]
+    [1 1 0 0 1 1 1 0 0 1 1 1 1 1 1 1]
+    [1 1 1 1 1 1 1 0 0 1 1 1 1 1 1 1]
+    [1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
+    [1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
+    [1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1]
+    [0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 0]"""[1:]
+    zs = []
+    for i in arr.splitlines(keepends=False):
+        xs = [int(x) for x in i[1:-1].split()]
+        zs.append(xs)
+    zs = np.array(zs)
+    zs[0] = 1
+    zs[-1] = 1
+    zs[:, 0] = 1
+    zs[:, -1] = 1
+    blocks = []
+    print(zs)
+    for y in range(zs.shape[1]):
+        for x in range(zs.shape[0]):
+            if zs[y, x] == 0:
+                zs[y:y + 2, x:x + 2] = 1
+                blocks.append((x, y))
+    min_dist = [min(block[0], block[1], 16 - block[0] - 2, 16 - block[1] - 2) for block in blocks]
+    dist, block = min(zip(min_dist, blocks))
+
+    exit()
