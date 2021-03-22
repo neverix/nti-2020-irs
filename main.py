@@ -252,11 +252,10 @@ def icp2(a, b):
     return mat, rot, t
 
 
-
-
 def icp(a, b, keep_thresh=.75):
     a, b = a[np.all(np.isfinite(a) & np.isfinite(b), axis=-1)].copy(), b[np.all(np.isfinite(b) & np.isfinite(a), axis=-1)].copy()
     sqrs = np.sum((a - b) ** 2, axis=-1)
+    # print(np.sort(sqrs)[int(len(sqrs) * keep_thresh)])
     keep = sqrs < np.sort(sqrs)[int(len(sqrs) * keep_thresh)]
     a, b = a[keep], b[keep]
     m = a.shape[1]
@@ -318,13 +317,16 @@ def trans(img, x, y):
                 ]), (img.shape[1], img.shape[0]))
 
 
-def align(a, b, iterations=25, keep_thresh=.75):
+def align(a, b, m=None, iterations=25, keep_thresh=.75):
     knn = cv2.ml.KNearest_create()
     knn.train(a.astype(np.float32), cv2.ml.ROW_SAMPLE, np.array(list(range(len(a))), dtype=np.float32)[:, None])
 
-    m = np.identity(3)
+    if m is None:
+        m = np.identity(3)
+    source_m = np.identity(3)
     ds = []
     points_d = np.concatenate((b, np.ones((b.shape[0], 1))), axis=-1).copy()
+    points_d = np.dot(m, points_d.T).T
     err = 0.
     for i in range(iterations):
         # print(i)
@@ -338,11 +340,14 @@ def align(a, b, iterations=25, keep_thresh=.75):
         # m = np.matmul(m, m_)
         # print("plot")
         points_d = np.dot(m_, points_d.T).T
-        err = np.sum((points_d[:, :2] - points_c) ** 2)
+        errs = points_d[:, :2] - points_c
+        errs = errs[np.isfinite(errs)]
+        err = np.sum(errs ** 2)
         m = np.dot(m, m_)
+        source_m = np.dot(source_m, m_)
         # points_d = np.concatenate((points_d[:, :2], np.ones((points_d.shape[0], 1))), axis=-1).copy()
         ds.append(points_d)
-    return points_d, m, err
+    return points_d[:, :2], source_m, err
 
 
 if __name__ == "__main__":
@@ -354,19 +359,36 @@ if __name__ == "__main__":
     # exit()
 
     robot.setVelosities(0., -.6)
-    robot.sleep(2.)
+    robot.sleep(0.5)
     points_a = get_points(robot.getLaser(), robot.getDirection())
+    img = create_img(points_a, 512, 5)
 
-    robot.setVelosities(.5, -.8)
-    robot.sleep(2.)
-    # robot.sleep(2.)
-    # robot.setVelosities(.5, 0)
-    # robot.sleep(2.)
-    points_b = get_points(robot.getLaser(), robot.getDirection())
-    robot.setVelosities(0, 0)
+    m = np.identity(3)
+    points_last = points_a
+    for i in range(92):
+        print(i)
+        robot.setVelosities(.0, .5)
+        robot.sleep(.5)
+        # robot.sleep(2.)
+        # robot.setVelosities(.5, 0)
+        # robot.sleep(2.)
+        points_b = get_points(robot.getLaser(), robot.getDirection())
+        robot.setVelosities(0, 0)
 
-    points_d, m, err = align(points_a, points_b, keep_thresh=.65)
-    print(err)
+        # points_d, m_, err = align(points_last, points_b, m, keep_thresh=.65)
+        m_, err, points_d = np.identity(3), 0., points_b
+        # points_de = np.concatenate((points_d, np.ones((points_d.shape[0], 1))), axis=-1).copy()
+        # points_de = np.dot(m_, points_de.T).T[:, :2]
+        m = np.dot(m, m_)
+
+        print(err)
+        img += create_img(points_d, 512, 5)
+        cv2.imshow("img", (img.astype(np.float32) * 255 / img.max()).astype(np.uint8))
+        robot.setVelosities(0, 0)
+        cv2.waitKey(1)
+        # points_last = points_d[:, :2]
+    cv2.waitKey(0)
+    exit()
     plt.axes().set_aspect('equal')
     plt.plot(points_a[:, 0], points_a[:, 1])
     plt.plot(points_b[:, 0], points_b[:, 1])
