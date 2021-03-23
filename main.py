@@ -74,7 +74,7 @@ def std(x):
     if x < 0:
         x = 2 * np.pi + x
     return x % (np.pi * 2)
-def get_points(laser, rot=0., arm=0# .455/4#3
+def get_points(laser, rot=0., arm=0.# -.455/2# .455/4#3
                ):
     angle = np.pi * 4 / 3 # laser["angle"]
     laser = laser["values"]
@@ -87,6 +87,9 @@ def get_points(laser, rot=0., arm=0# .455/4#3
     xs, ys = np.cos(xs) * ys + np.cos(rot) * arm, np.sin(xs) * ys + np.sin(rot) * arm
     xs, ys = xs[40:-40], ys[40:-40]
     xy = np.stack((xs, ys), axis=-1)
+    dist = lambda a, b: np.sum((a - b) ** 2, axis=-1)
+    dists_fw = dist(xy[:-1] - xy[1:], xy[:-2] - xy[2:])
+    # dists_bakc
     return xy
     d = xy[1:] - xy[:-1]
     r = std(std(np.arctan2(d[:, 1], d[:, 0])) - rot)
@@ -103,7 +106,7 @@ def m2cpr(x):
     return x / 0.09
 def compass_error():
     # compass
-    target_angle = round_angle(robot.getDirection())
+    target_angle = robot.getDirection() # round_angle(robot.getDirection())
     def error():
         err = (robot.getDirection() - target_angle + np.pi * 5) % (np.pi * 2) - (np.pi)
         return err * 50
@@ -123,7 +126,7 @@ def laser_error():
         else:
             return compass()
     return error
-def forward(controller=1):
+def forward(controller=1, bs=block_size):
     if controller == 0:
         error = compass_error()
     elif controller == 1:
@@ -135,7 +138,7 @@ def forward(controller=1):
     def termination():
         encoder_current = robot.getEncoders()["left"]
         _, f, _ = sensor()
-        return (encoder_current - encoder_start >= m2cpr(block_size)) or (f < bff_limit)
+        return (encoder_current - encoder_start >= m2cpr(bs)) or (f < bff_limit)
 
     # PID
     pid(error, termination)
@@ -415,7 +418,7 @@ def keyframe():
 
 
 
-def rem(plot=False, draw=False):
+def rem(key=True, plot=False, draw=False):
     global m, img, tile
     points = all_points[-3:] + all_points[0:-3:3]
     points_last = np.concatenate(points, axis=0)
@@ -455,7 +458,8 @@ def rem(plot=False, draw=False):
         # robot.setVelosities(0, 0)
         cv2.waitKey(1)
     # all_points = [points_d]
-    all_points.append(points_d[np.all(np.isfinite(points_d), axis=-1), :2])
+    if key:
+        all_points.append(points_d[np.all(np.isfinite(points_d), axis=-1), :2])
     # points_last = np.concatenate((points_last, points_d[np.all(np.isfinite(points_d), axis=-1), :2]))
     return err, origin
 
@@ -464,32 +468,84 @@ def maxnorm(img):
     return (img / img.max()) * 255
 
 
-def bfs(world, source, trarge):
+def bfs(world, costs, source, trarge):
     conv = lambda x: tuple(int(x) for x in (world.shape[0] * world2img(x)).flatten())
     start = conv(source)
-    # print(source, start)
     trarge = conv(trarge)
-    que = [start + ((),)]
+    # print(start, trarge)
+    que = [start + ((), 0)]
     vis = {start}
     while True:
-        queue = []
-        for px, py, hist in que:
-            for x in range(-1, 1):
-                for y in range(-1, 1):
-                    if x == y == 0:
-                        continue
-                    point = (px+x, py+y)
-                    if point in vis:
-                        continue
-                    if world[point[1], point[0]] > 0:
-                        continue
-                    vis.add(point)
-                    point += (hist + (point,),)
-                    queue.append(point)
-                    if point[:2] == trarge:
-                        # print(point)
-                        return np.array(point[-1], dtype=np.int32)
-        que = queue
+        que.sort(key=lambda x: x[-1])
+        try:
+            px, py, hist, cost = que.pop()
+        except IndexError:
+            return np.array([], dtype=np.int32)
+        for x in range(-1, 1):
+            for y in range(-1, 1):
+                if x == y == 0:
+                    continue
+                point = (px+x, py+y)
+                if point in vis:
+                    continue
+                if px == 0 or py == 0:
+                    continue
+                if world[point[1], point[0]] and not world[py, px]:
+                    continue
+                vis.add(point)
+                point += (hist + (point,), cost + costs[point[1], point[0]])
+                que.append(point)
+                if world[py, px]:
+                    if not world[point[1], point[0]]:
+                        print('from')
+                        que = [point]
+                elif point[:2] == trarge:
+                    # print(point)
+                    return np.array(point[-2], dtype=np.int32)
+
+def stb(x):
+    return (x + np.pi * 5) % (np.pi * 2) - (np.pi)
+
+def reg_forward(goal):
+    _, start_position = rem(key=False)
+    direction = goal - start_position
+    turn_angle(np.arctan2(direction[1], direction[0]))
+    compass = compass_error()
+
+    position = start_position
+    bs = np.sum((goal - start_position) ** 2)
+    def error():
+        return compass()
+        nonlocal position
+        _, position = rem(key=False)
+        direction = goal - position
+        target = np.arctan2(direction[1], direction[0])
+        turn = target - robot.getDirection()
+        return stb(turn) * 50
+        for map in all_points:
+            plt.scatter(map[:, 0], map[:, 1])
+        plt.scatter(position[0], position[1], marker='x', c='gray')
+        plt.show()
+        return compass()
+
+    encoder_start = robot.getEncoders()["left"]
+    _, fs, _ = sensor()
+    compass = compass_error()
+    def termination():
+        _, f, _ = sensor()
+        encoder_current = robot.getEncoders()["left"]
+        if f <= bs * 2:
+            return (abs(fs - f) > bs) or (encoder_current - encoder_start >= m2cpr(bs + .1))
+        return compass()
+        # nonlocal position
+        # _, position = rem(key=False)
+        # return np.dot(position-start_position, goal-start_position) / np.linalg.norm(goal-start_position) > 1
+        # encoder_current = robot.getEncoders()["left"]
+        # _, f, _ = sensor()
+        # return (encoder_current - encoder_start >= m2cpr(bs)) or (f < bff_limit)
+
+    # PID
+    pid(error, termination, vel=.3)
 
 
 if __name__ == "__main__":
@@ -506,9 +562,11 @@ if __name__ == "__main__":
     # help(cv2.ppf_match_3d)
     # exit()
 
+    # robot.setVelosities(0., +.6)
     # robot.setVelosities(0., -.6)
-    robot.sleep(0.65)
-    # robot.setVelosities(0., -0.)
+    # robot.sleep(0.65)
+    # robot.sleep(1.85)
+    robot.setVelosities(0., -0.)
     # robot.sleep(1.5)
     points_a = get_points(robot.getLaser(), robot.getDirection())
     offset = np.zeros(2)
@@ -523,40 +581,77 @@ if __name__ == "__main__":
     # exit()
     for i in range(150):
         # print(i)
-        if i == 0:
+        if i == 0: #or i:
             robot.setVelosities(.5, .0)
             robot.sleep(.5)
             robot.setVelosities(0, 0)
-        _, offset = rem()#draw=True)#draw=True, plot=True)
+        _, offset = rem(plot=True)#, plot=True)
         # print(offset)
         if i > -1:
-            obst = (maxnorm(img) > .05).astype(np.uint8)
-            off = 23
+            obst = (maxnorm(img) > .1).astype(np.uint8)
+            off = 1
             obst = cv2.dilate(obst, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (off, off)))
-            hist = bfs(obst, offset, np.array((-4, -4)))
+            dmp = cv2.distanceTransform(1-obst, cv2.DIST_L1, 5)
+            # dmp[dmp < 15] -= 500000
+            # dmp = np.minimum(dmp, 455555.) * 150
+            is_voronoi = dmp == np.maximum(dmp, np.maximum(np.roll(dmp, 1, axis=0), np.roll(dmp, -1, axis=0)))
+            dmp *= 100.
+            dmp = cv2.ximgproc.thinning((1-obst) * 255)
+
+            inds = np.stack(np.mgrid[0:512, 0:512], axis=-1)
+            possible = inds[dmp > 0].reshape((-1, 2))
+            possible = (possible / 512. - 0.5) * 10.
+            goal = np.array((-2., -2.))
+            goal = possible[np.argmin(np.sum((possible - goal) ** 2))]
+
+            hist = bfs(dmp #  obst
+                       , np.zeros_like(
+                        is_voronoi
+                       ),
+                       offset, np.array((-2., -2.)))
             obst[hist[:, 1], hist[:, 0]] = 1
+            # waypoint = np.array((-2., -2.))
+            # waypoint = (hist[1] / img.shape[0] - 0.5) * 10.
+            # origin = waypoint - offset
+            origin = ((hist[1] - hist[0]) / img.shape[0] - 0.5) * 10.
+            angle = np.arctan2(origin[1], origin[0])
+            if angle < 0:
+                angle = 2 * np.pi + angle
+            turn_angle(angle)
+            forward(bs=.2)
+            # reg_forward(waypoint)
+            # forward(bs=min(.3, np.sum(origin ** 2)), controller=0)
+            # err = stb(std(angle) - std(robot.getDirection()))
+            # err *= 4.
+            robot.setVelosities(0, 0)
+            # err = np.sign(err) * min(.5, abs(err))
+            # print(err)
+            # robot.setVelosities(.2, -err)
             cv2.imshow("obst", obst * 255)
-            cv2.waitKey(1)
+            cv2.imshow("dmp", dmp / dmp.max())
+            cv2.imshow("vor", is_voronoi.astype(np.uint8) * 255)
+            cv2.waitKey(5000)
             # plt.imshow(obst)
             # plt.plot(hist[:, 0], hist[:, 1])
             # plt.show()
             # print(hist)
             # print(hist.shape)
-            origin = hist[1] - hist[0]
-            print(origin)
-            angle = np.arctan2(origin[1], origin[0])
-            direction = robot.getDirection()
-            turns = -(std(angle) - std(direction))
+            # origin = hist[1] - hist[0]
+            # print(origin)
+            # angle = np.arctan2(origin[1], origin[0])
+            # direction = robot.getDirection()
+            # turns = -(std(angle) - std(direction))
+            # turns = np.sign(turns) * min(.4, abs(turns))
             # if abs(turns) > np.pi:
             #     turns = (abs(turns) - np.pi) * -np.sign(turns)
 
             # print(turns)
-            robot.setVelosities(.5, turns * 1)
+            # robot.setVelosities(.2, turns * 1)
             # pf = np.zeros_like(img, dtype=np.float32)
             # pf -= cv2.GaussianBlur(maxnorm(img), (23, 23), 7)
             # plt.imshow(pf)
             # plt.show()
-        robot.sleep(0.001)
+        robot.sleep(0.05)
     cv2.waitKey(0)
     exit()
     plt.axes().set_aspect('equal')
