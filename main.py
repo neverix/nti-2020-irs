@@ -87,9 +87,28 @@ def get_points(laser, rot=0., arm=0.# -.455/2# .455/4#3
     xs, ys = np.cos(xs) * ys + np.cos(rot) * arm, np.sin(xs) * ys + np.sin(rot) * arm
     xs, ys = xs[40:-40], ys[40:-40]
     xy = np.stack((xs, ys), axis=-1)
-    dist = lambda a, b: np.sum((a - b) ** 2, axis=-1)
-    dists_fw = dist(xy[:-1] - xy[1:], xy[:-2] - xy[2:])
-    # dists_bakc
+    dist = lambda a, b: (a - b) ** 2# , axis=-1)
+    diff = lambda r: np.arctan2((np.roll(xy, r) - xy)[:, 1], (np.roll(xy, r) - xy)[:, 0])
+    df = diff(1)
+    dists_fw = dist(np.roll(df, 1) - df, np.roll(df, 2) - np.roll(df, 1))
+    db = diff(1)
+    dists_back = dist(np.roll(db, -1) - db, np.roll(db, -2) - np.roll(db, -1))
+    dists = np.maximum(dists_back, dists_fw)
+    start = dists[0]
+    end = None
+    totals = []
+    for i, (d, point) in enumerate(zip(dists[1:], xy[1:])):
+        if d > .2:
+            end = point
+            totals.append((start, end))
+            end = start = None
+        if start is None:
+            start = point
+    corr = []
+    for start, end in totals:
+        corr.append(np.linspace(start, end, num=50))
+    return np.concatenate(corr, axis=0)
+    exit()
     return xy
     d = xy[1:] - xy[:-1]
     r = std(std(np.arctan2(d[:, 1], d[:, 0])) - rot)
@@ -564,7 +583,7 @@ if __name__ == "__main__":
 
     # robot.setVelosities(0., +.6)
     # robot.setVelosities(0., -.6)
-    # robot.sleep(0.65)
+    robot.sleep(0.65)
     # robot.sleep(1.85)
     robot.setVelosities(0., -0.)
     # robot.sleep(1.5)
@@ -581,13 +600,13 @@ if __name__ == "__main__":
     # exit()
     for i in range(150):
         # print(i)
-        if i == 0: #or i:
+        if i == 0 or i:
             robot.setVelosities(.5, .0)
             robot.sleep(.5)
             robot.setVelosities(0, 0)
         _, offset = rem(plot=True)#, plot=True)
         # print(offset)
-        if i > -1:
+        if i < -1:
             obst = (maxnorm(img) > .1).astype(np.uint8)
             off = 1
             obst = cv2.dilate(obst, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (off, off)))
@@ -617,8 +636,8 @@ if __name__ == "__main__":
             angle = np.arctan2(origin[1], origin[0])
             if angle < 0:
                 angle = 2 * np.pi + angle
-            turn_angle(angle)
-            forward(bs=.2)
+            # turn_angle(angle)
+            # forward(bs=.2)
             # reg_forward(waypoint)
             # forward(bs=min(.3, np.sum(origin ** 2)), controller=0)
             # err = stb(std(angle) - std(robot.getDirection()))
